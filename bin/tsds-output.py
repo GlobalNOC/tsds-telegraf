@@ -171,8 +171,8 @@ class Client(object):
         try:
             data_str = json_dumps(data)
         except RuntimeError as e:
-            self.log.error('Error while attempting to create JSON string from data: {}\n{}'.format(data, e))
-            return 1
+            self.log.error('push(): Error while attempting to create JSON string from data: {}\n{}'.format(data, e))
+            return None
 
         # Create the data dict for requests to POST
         post_data = {'method': 'add_data', 'data': data_str}
@@ -192,48 +192,72 @@ class Client(object):
 
         except RuntimeError as e:
             self.request.data = None
-            self.log.error('Error while attempting to POST data: {}'.format(e))
-            return 1
+            self.log.error('push(): Error while attempting to POST data: {}'.format(e))
+            return None
     
         self.log.info('Pushed {} updates to TSDS'.format(len(data)))
         if self.log.debug_mode and len(data) > 0:
             self.log.debug('Sample update from batch:')
             self.log.debug(data[0])
 
-        return
-        
+        return 1
 
-''' DataTransformer(collections, Log)
+
+class CacheEntry(object):
+    
+    def __init__(self, timestamp):
+        self.timestamp = timestamp
+        self.alignment = None
+        self.data      = {}
+
+    # Timestamp
+    @property
+    def timestamp(self):
+        return self.__timestamp
+    @timestamp.setter
+    def timestamp(self, timestamp):
+        self.__timestamp = int(timestamp)
+    # Aligned Timestamp
+    @property
+    def alignment(self):
+        return self.__alignment
+    @alignment.setter
+    def alignment(self, alignment):
+        self.__alignment = alignment
+    # Data Dictionary
+    @property
+    def data(self):
+        return self.__data
+    @data.setter
+    def data(self, data):
+        self.__data = data
+
+
+''' Transformer(collections, Log)
 Uses configurable definitions to translate Telegraf metrics to TSDS measurements.
 Performs data transormations including rate calculations.
 '''
-class DataTransformer(object):
+class Transformer(object):
 
     # More than meets the eye
     def __init__(self, collections, log):
         self.collections = collections
         self.log         = log
         self.cache       = {}
-
         self.log.debug('Initialized DataTransformer instance')
 
-    # Collections Get & Set
     @property
     def collections(self):
         return self.__collections
     @collections.setter
     def collections(self, collections):
         self.__collections = collections
-
-    # Log Get & Set
     @property
     def log(self):
         return self.__log
     @log.setter
     def log(self, log):
         self.__log = log
-
-    # Cache Get & Set
     @property
     def cache(self):
         return self.__cache
@@ -241,108 +265,203 @@ class DataTransformer(object):
     def cache(self, cache):
         self.__cache = cache if isinstance(cache,dict) else dict()
 
-    # Transforms a JSON string from Telegraf into a list of data dicts for TSDS ingestion
-    def transform(self, json_str):
 
-        # Returned output will be a list of data dicts
-        output = []
+    def _validate_metric(self, metric):
+        '''
+        Validates that all metric components exist.
+        Returns False when any components are missing.
+        '''
+        errors = 0
+        for component in ['name', 'fields', 'tags', 'timestamp']:
+            if metric.get(component) == None:
+                errors += 1
+                self.log.debug('Metric missing "{}" component'.format(component))
+        return (errors == 0)
+
+
+    def _align_timestamp(self, entry, cached, interval):
+        '''
+        Aligns timestamps to the most appropriate rounded collection interval.
+        This is a workaround for a TSDS bug that always uses the rounded floor of the timestamp.
+        '''
+        mod = entry.timestamp % interval
+
+        # Use the current timestamp if it is already aligned
+        if mod == 0:
+            return entry.timestamp
+
+        # Default alignment is rounded down
+        aligned = entry.timestamp - mod
+
+        # Check the default alignment against a previous one if it exists
+        # If it's the same, the new data is rounded to the next interval.
+        # Otherwise, the default rounded down alignment is used
+        if cached and cached.alignment and cached.alignment == aligned:
+            return int(aligned + interval)
+        return int(aligned)
+
+
+    def _calculate_rate(self, value, name, cached, interval, timestamp):   
+        ''' Calculate a rate using new data and the cached entry '''
+
+        # Validate everything needed for calculation is available
+        if cached != None:
+            if timestamp == None:
+                self.log.error('_calculate_rate(): Missing current timestamp for "{}"'.format(name))
+                return None
+        
+            elif value == None:
+                self.log.error('_calculate_rate(): Missing current value for "{}"'.format(name))
+                return None
+
+            elif cached.timestamp == None:
+                self.log.error('_calculate_rate(): Missing cached timestamp for "{}"'.format(name))
+                return None
+
+            elif cached.data.get(name) == None:
+                self.log.error('_calculate_rate(): Missing cached value for "{}"'.format(name))
+                return None
+        else:
+            return None
+
+        # Calculate the time delta between entries
+        time_delta = timestamp - cached.timestamp
+
+        # Catch deltas that are negative or 0
+        if time_delta <= 0:
+            self.log.error('_calculate_rate(): Erroneous time delta ({}s) detected for "{}"'.format(time_delta, name))
+            return None
+
+        cached_value = cached.data.get(name)
+
+        # Calculate the value delta between entries
+        value_delta = value - cached_value
+
+        # Handle counter overflow/reset
+        if value < cached_value:
+
+            # 64-bit counters
+            if value > 2**32:
+                value_delta = 2**64 - cached_value + value
+            # 32-bit counters
+            else:
+                value_delta = 2**32 - cached_value + value
+
+        # Return the calculated rate
+        return value_delta / time_delta
+
+
+    # Parses a Telegraf Metric JSON string and returns a Measurement for TSDS ingestion
+    def get_measurement(self, json_str):
 
         # Attempt to load the JSON string as a dict
         try:
-            data = json_loads(json_str)
+            metric = json_loads(json_str)
         except RuntimeError as e:
-            self.log.error('Unable to parse JSON string from STDIN, skipping ({}): {}'.format(line, e))
-            return output
+            self.log.error('get_measurement(): Unable to parse JSON string from STDIN, skipping ({}): {}'.format(line, e))
+            return None
 
-        # Get the Telegraf data components
-        name      = data.get('name')
-        fields    = data.get('fields')
-        tags      = data.get('tags')
-        timestamp = data.get('timestamp')
-        
-        # Verify data components are present
-        verify_err  = 'Received data with missing component(s): {}'
-        verify_miss = []
-        if name == None:
-            verify_miss.append('"name"')
-        if fields == None:
-            verify_miss.append('"fields"')
-        if tags == None:
-            verify_miss.append('"tags"')          
-        if timestamp == None:
-            verify_miss.append('"timestamp"')
-        # Log an error and return the empty output array 
-        if len(verify_miss) > 0:
-            self.log.error(verify_err.format(', '.join(verify_miss)))
-            return output
+        # Validate the Metric
+        if not self._validate_metric(metric):
+            return None
 
-        # Get the collection configuration by using its name from the data
-        collection = self.collections.get(name, False)
+        # Get the collection configuration using the metric name
+        collection = self.collections.get(metric.get('name'))
 
-        # Check whether the collection type has configurations
-        if not collection:
-            self.log.error('Collection "{}" is not configured!'.format(name))
-            return output
+        # Check whether the metric name has a configured collection in the plugin
+        if collection == None:
+            self.log.error('get_measurement(): Collection "{}" is not configured'.format(metric.get('name')))
+            return None
 
-        # Initialize a cache for the collection type when it doesn't exist
-        if name not in self.cache:
+        # An array of measurement dicts that will be returned and written to TSDS
+        output = []
 
-            # The collection's cache has an ordering of all defined metadata keys
-            # Telegraf metrics can contain disjointed data due to async replies or packet sizing
-            self.cache[name] = {}
+        # Get the collection components
+        tsds_name = collection.get('tsds_name')
+        interval  = collection.get('interval')
 
-        # Get a metadata dictionary
-        metadata, meta_errors = self._parse_metadata(collection, tags)
-        if meta_errors:
-            return output
+        # Get the metric components
+        name      = metric.get('name')
+        tags      = metric.get('tags')
+        fields    = metric.get('fields')
+        timestamp = int(metric.get('timestamp'))
 
-        # Get or create a dict for the metadata combination within the collection type's cache
-        # This dict is used for value processing
-        meta_key    = name + '|' + "|".join(sorted(metadata.values()))
-        cache_entry = self.cache[name].setdefault(meta_key, {})
+        # Initialize the metadata and values dicts and error flags
+        metadata, values = dict(), dict()
+        meta_err = False
 
-        interval = collection.get('interval')
+        # Parse metadata from tags
+        for tag_map in collection.get('metadata'):
+            tag_name  = tag_map.get('from')
+            meta_name = tag_map.get('to')
+            optional  = tag_map.get('optional')
 
-        # Use the Telegraf field maps to build value data for TSDS
-        values = {}
+            tag = tags.get(tag_name)
+
+            # Set the metadata to the tag value
+            if tag != None:
+                metadata[meta_name] = tag
+
+            elif not optional:
+                self.log.error('get_measurement(): "{}" Metric missing metadata for "{}"'.format(name, meta_name))
+                meta_err = True
+
+        # Return when required metadata is missing
+        if meta_err:
+            return None
+
+        # Make a cache ID using the name and metadata combination
+        cache_id = name + '|' + '|'.join(sorted(metadata.values()))
+
+        # Create a new cache entry for the current data
+        entry = CacheEntry(timestamp)
+
+        # Get an existng cache entry
+        cached_entry = self.cache.get(cache_id)
+
+        # Parse values from fields
         for field_map in collection.get('fields', []):
-            
-            field_name = field_map['from']
-            value_name = field_map['to']
 
-            # Pull the value for the Telegraf field
-            value = fields.get(field_name, None)
+            field_name = field_map.get('from')
+            value_name = field_map.get('to')
+            is_rate    = (field_map.get('rate') != None)
 
-            # TODO: How should missing field_names be handled?
-            # Verify that we have a value for the requested field_name
-            if value == None:
-                #self.log.debug('No value for requested field name "{}"'.format(field_name))
-                values[value_name] = None
-                continue
+            value = fields.get(field_name)
 
-            # Apply rate calculations
-            if 'rate' in field_map:
-                value = self._calculate_rate(\
-                    cache_entry,\
-                    value_name,\
-                    int(timestamp),\
-                    value,\
-                    interval,\
-                    meta_key\
-                )
+            # The value requires rate calculation
+            if is_rate:
+       
+                values[value_name] = self._calculate_rate(value, value_name, cached_entry, interval, timestamp)
 
-            # Set the value data for the TSDS value name
-            values[value_name] = value
+                # Add the raw value to the cache entry for future rate calculations
+                entry.data[value_name] = value
 
-        # Create a dict of data to push to TSDS and add it to the output
-        tsds_data = {
+                if cached_entry != None and values[value_name] == None:
+                    self.log.error('get_measurement(): Could not calculate "{}" rate for "{}"'.format(value_name, cache_id))
+
+            # No rate calculation, just add to values
+            else:
+                values[value_name] = value
+
+        # Get the aligned timestamp for the TSDS interval
+        aligned_time = self._align_timestamp(entry, cached_entry, interval)
+
+        # Set the aligned timestamp for the current entry
+        entry.alignment = aligned_time
+
+        # Overwrite any existing entry in the cache with the new one
+        self.cache[cache_id] = entry
+        
+        # Create a dict of measurement data to push to TSDS
+        measurement = {
+            "type":     tsds_name,
+            "time":     aligned_time,
             "meta":     metadata,
-            "time":     int(timestamp),
             "values":   values,
-            "interval": interval,
-            "type":     collection.get('tsds_name')
+            "interval": interval
         }
-        output.append(tsds_data)
+
+        output.append(measurement)
 
         # Return here unless we want optional metadata
         if 'optional_metadata' not in collection:
@@ -351,10 +470,6 @@ class DataTransformer(object):
         # Flag to indicate optional metadata fields are present
         has_opt = False
 
-        # Check for any optional metadata in the Telegraf tags
-        # TODO: This left in for backward compatability
-        #       but should be adjusted to use the "optional" flag
-        #       for metadata instead
         for opt_meta in collection.get('optional_metadata', []):
 
             tag_name  = opt_meta['from']
@@ -368,22 +483,22 @@ class DataTransformer(object):
             elif "*" in tag_name:
 
                 # Get the data for each Telegraf tag that matches our wildcard
-                optional_metadata = [tags[t] for t in tags if re.match(tag_name, t)]
+                optional_tags = [tags[t] for t in tags if re.match(tag_name, t)]
 
                 # Map matches to a specified field_name if configured
                 if opt_meta.get('field_name'):
-                    optional_metadata = [{opt_meta['field_name']: m} for m in optional_metadata]
+                    optional_tags = [{opt_meta['field_name']: m} for m in optional_tags]
 
-                if len(optional_metadata):
-                    metadata[meta_name] = optional_metadata
+                if len(optional_tags):
+                    metadata[meta_name] = optional_tags
                     has_opt = True
 
         # Add a separate object for optional metadata to the output for TSDS
         if has_opt:
             metadata_data = {
                 "meta": metadata,
-                "time": timestamp,
-                "type": collection.get('tsds_name') + ".metadata"
+                "time": aligned_time,
+                "type": tsds_name + ".metadata"
             }
             output.append(metadata_data)
 
@@ -392,79 +507,6 @@ class DataTransformer(object):
             
         return output
 
-
-    def _parse_metadata(self, collection, tags):
-        '''
-        Create a dict of the metadata TSDS names mapped to the values from Telegraf.
-        Telegraf tags are a map of metadata fieldnames to their values.
-        '''
-        metadata = {}
-        errors   = 0
-        for c in collection.get('metadata'):
-             
-            tag_name  = c.get('from')
-            meta_name = c.get('to')
-            optional  = c.get('optional')
-            value     = tags.get(tag_name)
-
-            if value != None:
-                metadata[meta_name] = value
-
-            elif not optional:
-                errors += 1
-
-        if errors:
-            self.log.debug('{} data missing {} metadata values'.format(collection.get('tsds_name'),errors))
-
-        return metadata, errors
-
-
-    def _calculate_rate(self, cache_entry, value_name, timestamp, value, interval, meta_key):
-        '''
-        Calculate a rate value using the current value, last cached value, and interval.
-        '''
-
-        # Retrieve data from the cache
-        (last_timestamp, last_value) = cache_entry.setdefault(value_name, (timestamp, None))
-        cache_entry[value_name] = (timestamp, value)
-
-        # No current value or no previous value we return after updating the cache
-        if value == None or last_value == None:
-            return None
-
-        # Ensure the value is a float for calculations
-        value = float(value)
-
-        # Calculate the time delta
-        delta = int(timestamp - last_timestamp)
-
-        # Handle errors where the delta value is negative or zero
-        if delta <= 0:
-            return None
-
-        # Check whether the delta falls within an expected time interval
-        if delta > interval:
-            msg = 'ERROR: Rate delta exceeds expected interval for key "{}" [INTERVAL {} | DELTA {} | CURRENT {} | LAST {}]'
-            self.log.error(msg.format(meta_key, interval, delta, timestamp, last_timestamp))
-
-        # Calculate the change in the value
-        delta_value = value - last_value
-
-        # Handle counter overflow/reset here
-        if value < last_value:
-
-            # 64-bit counters
-            if value > 2**32:
-                delta_value = 2**64 - last_value + value
-            # 32-bit counters
-            else:
-                delta_value = 2**32 - last_value + value
-        
-        # Calculate the rate
-        rate = delta_value / delta
-        
-        return rate
-    
 
 ''' Main processing loop.
 Takes config file from command-line arguments to configure classes.
@@ -482,38 +524,44 @@ if __name__ == '__main__':
         with open(config_file) as f:
             config = load_yaml(f)
 
-    # Instantiate the Config, Log, Client, and DataTransform objects
-    L    = Log(config.get('logging'))
-    TSDS = Client(config.get('client'), L)
-    DT   = DataTransformer(config.get('collections'), L)
+    # Instantiate the Log, Client, and Transformer objects
+    log         = Log(config.get('logging'))
+    client      = Client(config.get('client'), log)
+    transformer = Transformer(config.get('collections'), log)
 
-    L.info('Initialized TSDS-Telegraf execd plugin')
+    log.info('Initialized TSDS-Telegraf execd plugin')
 
-    # Batch array for incoming JSON storage
+    # Batch array for storing metrics transformed into TSDS measurements
     batch = []
     
     # Get the number of updates to send in a batch
     batch_size = config.get('batch_size', 10)
 
-    # Process each line from STDIN
+    # Process Metric JSON strings from STDIN
     for line in sys.stdin:
 
-        # Applies any data transformations and rate calculations
-        # Provides an array of data dicts to add to the batch
-        updates = DT.transform(line)
+        # Parse the Metric JSON and return a TSDS measurement
+        # Any rate calculation or other operation has been applied to the measurement
+        measurement = transformer.get_measurement(line)
 
-        if len(updates) == 0:
-            L.warn('Line from STDIN did not produce any update messages: {}'.format(line))
+        # For some reason, we could not create a measurement from the JSON
+        if measurement == None:
+            log.error('main(): Line from STDIN did not produce any update messages: {}'.format(line))
             continue
 
-        # Adds the resulting TSDS update dicts to the batch
-        batch.extend(updates)
+        # Add the measurement data to the batch
+        batch.extend(measurement)
 
-        # Push the updates batch once it has reached an appropriate size
+        # Push the batch to TSDS once its ready
         if len(batch) >= batch_size:
 
-            err = TSDS.push(batch)
-            batch = []
+            res = client.push(batch)
 
-            if err:
+            # Reset the batch when it was successfully pushed
+            if res:
+                batch = []
+            
+            # Exit and let Telegraf restart the plugin if data can't be pushed
+            else:
                 sys.exit()
+
