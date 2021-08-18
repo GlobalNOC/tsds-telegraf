@@ -5,10 +5,13 @@ logging:
   file: '/path/to/logfile'
 
 # TSDS Push Service
-tsds:
-  url: "https://yourserver.com/tsds-basic/"
+client:
+  username_env_var: "PUSH_USER"
+  password_env_var: "PUSH_PASS"
+  url_env_var: "PUSH_URL"
   username: "username"
   password: "password"
+  url: "https://yourserver.com/tsds-basic/"
   timeout: 15
 
 # Collections of Telegraf Metric to TSDS Measurement Configurations

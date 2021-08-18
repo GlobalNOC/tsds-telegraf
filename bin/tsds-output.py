@@ -3,6 +3,7 @@ import sys, logging
 from yaml import load as load_yaml
 from json import loads as json_loads, dumps as json_dumps
 from re import match, escape
+from os import environ
 from requests import Session, Request
 
 ''' Log(config)
@@ -94,10 +95,27 @@ class Client(object):
 
     def __init__(self, config, log):
         
+        # get client information from client segment in config
         self.username = config.get('username')
         self.password = config.get('password')
         self.url      = config.get('url')
         self.timeout  = config.get('timeout')
+
+        # get environment variable names from same client segment
+        username_env_var = config.get('username_env_var')
+        password_env_var = config.get('password_env_var')
+        url_env_var      = config.get('url_env_var')
+
+        # override client info if environment vars are being used
+        if username_env_var in environ:
+            self.username = environ[username_env_var]
+
+        if password_env_var in environ:
+            self.password = environ[password_env_var]
+
+        if url_env_var in environ:
+            self.url = environ[url_env_var]
+
 
         # Create a Session and Request object used for POSTing requests
         self.session      = Session()
