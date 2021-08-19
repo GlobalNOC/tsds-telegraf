@@ -7,7 +7,7 @@ logging:
 # TSDS Push Service
 client:
   username_env_var: "PUSH_USER"
-  password_env_var: "PUSH_PASS"
+  password_location_env_var: "PUSH_PASS_LOC"
   url_env_var: "PUSH_URL"
   username: "username"
   password: "password"
