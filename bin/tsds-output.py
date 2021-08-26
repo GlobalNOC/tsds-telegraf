@@ -103,15 +103,16 @@ class Client(object):
 
         # get environment variable names from same client segment
         username_env_var = config.get('username_env_var')
-        password_env_var = config.get('password_env_var')
+        password_location_env_var = config.get('password_location_env_var')
         url_env_var      = config.get('url_env_var')
 
         # override client info if environment vars are being used
         if username_env_var in environ:
             self.username = environ[username_env_var]
 
-        if password_env_var in environ:
-            self.password = environ[password_env_var]
+        if password_location_env_var in environ:
+            f = open(environ[password_location_env_var], "r")
+            self.password = f.readlines()[0].strip()
 
         if url_env_var in environ:
             self.url = environ[url_env_var]
