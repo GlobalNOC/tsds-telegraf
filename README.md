@@ -50,7 +50,7 @@ docker logs tsds-telegraf
 Copy `conf/test.conf.example` to `conf.d/test.conf` and run
 
 ```sh
-docker run --rm --name tsds-telegraf -v $(pwd)/conf.d:/etc/telegraf/grnoc/conf.d tsds-telegraf
+docker run --rm --name tsds-telegraf -v $(pwd)/conf.d:/etc/telegraf/conf.d tsds-telegraf
 ```
 
 You should see telegraf logs and eventually a bunch of output related to cpu and memory.
