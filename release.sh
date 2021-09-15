@@ -1,4 +1,5 @@
 #!/bin/bash
+set -xe
 
 # set PLATFORM "" to upload to docker.io
 PLATFORM="ghcr.io/"
