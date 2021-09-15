@@ -14,7 +14,6 @@ echo "version: $version"
 # run build
 docker build -t ${PLATFORM}$USERNAME/$IMAGE:latest .
 # tag it
-git add -A
 git commit -m "version $version"
 git tag -a "$version" -m "version $version"
 git push
