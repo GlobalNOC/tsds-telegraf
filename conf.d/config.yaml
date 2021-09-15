@@ -1,0 +1,62 @@
+---
+# Logging
+logging:
+  debug: False
+  file: '/path/to/logfile'
+
+# TSDS Push Service
+client:
+  username_env_var: "PUSH_USER"
+  password_location_env_var: "PUSH_PASS_LOC"
+  url_env_var: "PUSH_URL"
+  username: "username"
+  password: "password"
+  url: "https://yourserver.com/tsds-basic/"
+  timeout: 15
+
+# Collections of Telegraf Metric to TSDS Measurement Configurations
+collections:
+  interface:
+    tsds_name: interface
+    interval: 60
+    metadata:
+      - from: agent_host
+        to: "node"
+      - from: ifName
+        to: "intf"
+    optional_metadata:
+      - from: ifAlias
+        to: description
+      # Take all the ip addresses and roll them up
+      - from: ip_address_*
+        to: interface_address
+        field_name: value
+    fields:
+      - from: ifInErrors
+        to: inerror
+        rate: true
+      - from: ifOutErrors
+        to: outerror
+        rate: true
+      - from: ifHCInOctets
+        to: input
+        rate: true
+      - from: ifHCOutOctets
+        to: output
+        rate: true
+      - from: ifHCInUcastPkts
+        to: inUcast
+        rate: true
+      - from: ifHCOutUcastPkts
+        to: outUcast
+        rate: true
+      - from: ifInDiscards
+        to: indiscard
+        rate: true
+      - from: ifOutDiscards
+        to: outdiscard
+        rate: true
+      - from: ifOperStatus
+        to: status
+
+

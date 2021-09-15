@@ -2,6 +2,7 @@
 import sys, logging
 from yaml import load as load_yaml
 from json import loads as json_loads, dumps as json_dumps
+import re
 from re import match, escape
 from os import environ
 from requests import Session, Request

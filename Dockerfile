@@ -13,6 +13,7 @@ RUN pip3 install -r requirements.txt
 
 COPY bin/tsds-output.py /usr/bin/
 COPY conf/dummy.conf /etc/telegraf/telegraf.conf
+ADD VERSION .
 
 ENTRYPOINT [ "/usr/bin/telegraf"]
 CMD [ "-config", "/etc/telegraf/telegraf.conf", "-config-directory", "/etc/telegraf/conf.d" ]
