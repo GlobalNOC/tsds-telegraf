@@ -19,7 +19,7 @@ git commit -m "version $version"
 git tag -a "$version" -m "version $version"
 git push
 git push --tags
-docker tag ${PLATFORM}$IMAGE:latest ${PLATFORM}$IMAGE:$version
+docker tag ${PLATFORM}$USERNAME/$IMAGE:latest ${PLATFORM}$USERNAME/$IMAGE:$version
 # push it
 docker push ${PLATFORM}$USERNAME/$IMAGE:latest
 docker push ${PLATFORM}$USERNAME/$IMAGE:$version
