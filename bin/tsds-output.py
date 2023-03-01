@@ -5,6 +5,9 @@ from json import loads as json_loads, dumps as json_dumps
 from re import match, escape
 from requests import Session, Request
 
+# TODO: REMOVE THIS IMPORT?
+from time import time, localtime, strftime
+
 ''' Log(config)
 Allows for configurable logging with extra logic applied
 Methods can be expanded for additional logging requirements
@@ -205,10 +208,28 @@ class Client(object):
 
 class CacheEntry(object):
     
-    def __init__(self, timestamp):
+    def __init__(self, timestamp, created, raw_json):
         self.timestamp = timestamp
         self.alignment = None
         self.data      = {}
+
+        # TODO: REMOVE THESE PROPS
+        self.created   = created
+        self.raw       = raw_json
+
+    # TODO: REMOVE THIS PROP
+    @property
+    def created(self):
+        return self.__created
+    @created.setter
+    def created(self, time):
+        self.__created = time
+    @property
+    def raw(self):
+        return self.__raw
+    @raw.setter
+    def raw(self, raw):
+        self.__raw = raw
 
     # Timestamp
     @property
@@ -413,11 +434,43 @@ class Transformer(object):
         # Make a cache ID using the name and metadata combination
         cache_id = name + '|' + '|'.join(sorted(metadata.values()))
 
+        # TODO: REMOVE THIS
+        now = int(time())
+
         # Create a new cache entry for the current data
-        entry = CacheEntry(timestamp)
+        entry = CacheEntry(timestamp, now, json_str)
 
         # Get an existng cache entry
         cached_entry = self.cache.get(cache_id)
+
+        # TODO: REMOVE THIS BLOCK
+        bad = None
+        if cached_entry != None:
+
+            tform = "%Y-%m-%d %H:%M:%S"
+    
+            if entry.timestamp == cached_entry.timestamp:
+                self.log.error("[TIME ERROR] New timestamp identical to last cached timestamp")
+                bad = cache_id
+            elif entry.timestamp < cached_entry.timestamp:
+                self.log.error("[TIME ERROR] New timestamp occurring before last cached timestamp")
+                bad = cache_id
+            elif cached_entry.timestamp < 1600000000:
+                self.log.error("[TIME ERROR] Cached timestamp for the metadata combination was bad")
+                bad = cache_id
+            elif entry.timestamp > int(now + 86400):
+                self.log.error("[TIME ERROR] New timestamp occuring too far into the future")
+                bad = cache_id
+
+            if bad != None:
+                self.log.error("METADATA ID: {}".format(cache_id))
+                self.log.error("DATA TIMESTAMP   (NEW): {}".format(strftime(tform, localtime(entry.timestamp))))
+                self.log.error("DATA TIMESTAMP (CACHE): {}".format(strftime(tform, localtime(cached_entry.timestamp))))
+                self.log.error("SYSTEM TIME      (NEW): {}".format(strftime(tform, localtime(now))))
+                self.log.error("SYSTEM TIME    (CACHE): {}".format(strftime(tform, localtime(cached_entry.created))))
+                self.log.error("RAW JSON (CACHE): {}".format(cached_entry.raw))
+                self.log.error("RAW JSON (NEW):   {}".format(entry.raw))
+
 
         # Parse values from fields
         for field_map in collection.get('fields', []):
@@ -465,7 +518,7 @@ class Transformer(object):
 
         # Return here unless we want optional metadata
         if 'optional_metadata' not in collection:
-            return output
+            return output, bad
 
         # Flag to indicate optional metadata fields are present
         has_opt = False
@@ -505,7 +558,7 @@ class Transformer(object):
         self.log.debug('Transform produced the following data:')
         self.log.debug(output, True)
             
-        return output
+        return output, bad
 
 
 ''' Main processing loop.
@@ -542,7 +595,10 @@ if __name__ == '__main__':
 
         # Parse the Metric JSON and return a TSDS measurement
         # Any rate calculation or other operation has been applied to the measurement
-        measurement = transformer.get_measurement(line)
+        measurement, bad = transformer.get_measurement(line)
+
+        if bad != None:
+            log.error('main(): Line triggered a timestamp bug: {}'.format(line))
 
         # For some reason, we could not create a measurement from the JSON
         if measurement == None:
